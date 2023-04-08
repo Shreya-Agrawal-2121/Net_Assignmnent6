@@ -19,7 +19,7 @@
 #include <sys/time.h>
 #include <fcntl.h>
 #include <netdb.h>
-#define TIMEOUT 3000000
+#define TIMEOUT 1000000
 struct pseudo_header
 {
     u_int32_t source_address;
@@ -76,25 +76,19 @@ int main(int argc, char *argv[])
     source_addr.sin_family = AF_INET;
     source_addr.sin_port = htons(20000);
     source_addr.sin_addr.s_addr = INADDR_ANY;
-    int sock_icmp, sock_udp;
-
-    if ((sock_udp = socket(AF_INET, SOCK_RAW, IPPROTO_UDP)) < 0)
-    {
-        perror("UDP socket creation failed\n");
-        exit(1);
-    }
+    int sock_icmp;
     if ((sock_icmp = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)) < 0)
     {
         perror("ICMP socket creation failed\n");
         exit(1);
     }
     int one = 1, ttl = 1;
-    if (setsockopt(sock_udp, IPPROTO_IP, IP_HDRINCL, &one, sizeof(one)) < 0)
+    if (setsockopt(sock_icmp, IPPROTO_IP, IP_HDRINCL, &one, sizeof(one)) < 0)
     {
         perror("Set options for UDP socket failed\n");
         exit(1);
     }
-    if (bind(sock_udp, (struct sockaddr *)&source_addr, sizeof(source_addr)) < 0)
+    if (bind(sock_icmp, (struct sockaddr *)&source_addr, sizeof(source_addr)) < 0)
     {
         perror("Bind for UDP socket failed\n");
         exit(1);
@@ -105,6 +99,7 @@ int main(int argc, char *argv[])
        // perror("Bind for ICMP socket failed\n");
        // exit(1);
     //}
+    int msg = 0;
     while (1)
     {
         int done = 0, timeout = 0;
@@ -116,15 +111,11 @@ int main(int argc, char *argv[])
             struct iphdr *iph;
             struct icmphdr *icmph;
             struct udphdr *udph;
-            char datagram[4096], *data;
+            char datagram[4096] = "\0", *data;
             iph = (struct iphdr *)datagram;
-            udph = (struct udphdr *)(datagram + sizeof(struct iphdr));
-            udph->source = htons(20000);
-            udph->dest = htons(32164);
-            udph->len = htons(sizeof(struct udphdr));
-            udph->check = 0;
+            icmph = (struct icmphdr *)(datagram + sizeof(struct iphdr));
             iph->ihl = 5;
-            iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr));
+            iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct icmphdr));
             iph->check = 0;
             iph->daddr = dest_addr.sin_addr.s_addr;
             iph->saddr = source_addr.sin_addr.s_addr;
@@ -133,9 +124,14 @@ int main(int argc, char *argv[])
             iph->id = 10000;
             iph->tos = 0;
             iph->version = 4;
-            iph->protocol = IPPROTO_UDP;
+            iph->protocol = IPPROTO_ICMP;
             iph->check = csum((unsigned short *)datagram, sizeof(struct iphdr));
-            if (sendto(sock_udp, datagram, sizeof(struct iphdr) + sizeof(struct udphdr), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0)
+            icmph->type = ICMP_ECHO;
+            icmph->un.echo.id = getpid();
+            icmph->un.echo.sequence = msg++;
+            icmph->code = 0;
+            icmph->checksum = csum((unsigned short *)(datagram + sizeof(struct iphdr)),sizeof(struct icmphdr));
+            if (sendto(sock_icmp, datagram, sizeof(struct iphdr) + sizeof(struct udphdr), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0)
             {
                 perror("Send failed\n");
                 exit(1);
@@ -163,11 +159,10 @@ int main(int argc, char *argv[])
                             done = 1;
                             //break;
                         }
-                        else if (icmph->type == ICMP_DEST_UNREACH && icmph->code == ICMP_PORT_UNREACH && recv_iph->saddr == dest_addr.sin_addr.s_addr)
+                        else if (icmph->type == ICMP_ECHOREPLY && recv_iph->saddr == dest_addr.sin_addr.s_addr)
                         {
                             printf("Destination with ip %s reached at hop %d\n", inet_ntoa(from_addr.sin_addr), ttl);
                             done = 1;
-                            close(sock_udp);
                             close(sock_icmp);
                             exit(0);
                         }
