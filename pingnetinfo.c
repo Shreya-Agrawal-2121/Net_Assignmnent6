@@ -68,6 +68,7 @@ int main(int argc, char *argv[])
     }
     int n = atoi(argv[2]);
     int T = atoi(argv[3]);
+    int dest_reached = 0;
     struct sockaddr_in dest_addr, source_addr;
     dest_addr.sin_family = AF_INET;
     struct in_addr ipaddr = *(struct in_addr *)h->h_addr_list[0];
@@ -187,8 +188,7 @@ int main(int argc, char *argv[])
             if (is_dest)
             {
                 printf("Destination reached at hop %d with ip %s\n", ttl, inet_ntoa(from_addr.sin_addr));
-               
-                exit(0);
+                dest_reached = 1;
             }
             else
             {
@@ -200,7 +200,9 @@ int main(int argc, char *argv[])
         tv_out.tv_usec = 0;
 
         setsockopt(sock_icmp, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv_out, sizeof(tv_out));
-        for (int sz = 0; sz < 1; sz++)
+        suseconds_t latency = 0;
+        int bandwidth = 0;
+        for (int sz = 0; sz < 2; sz++)
         {
             for (int i = 0; i < n; i++)
             {
@@ -244,25 +246,60 @@ int main(int argc, char *argv[])
                 gettimeofday(&curr_time, NULL);
                 char recv_buf[4096];
                 sendto(sock_icmp, datagram, sizeof(struct iphdr) + sizeof(struct icmphdr) + sz, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
+
+                printf("\n...................................ICMP HEADER..................................\n");
+                printf("Sender: %s \t Dest: %s\n", inet_ntoa(source_addr.sin_addr), inet_ntoa(from_addr.sin_addr));
+                printf("Type: Echo Request       Code: 0       Checksum: %hu", ping_icmph->checksum);
+                printf("\n................................................................................\n");
+
                 struct sockaddr_in from_addr_ping;
                 int fromlen = sizeof(from_addr_ping);
                 recvfrom(sock_icmp, recv_buf, sizeof(recv_buf), 0, (struct sockaddr *)&from_addr_ping, &fromlen);
+
                 struct iphdr *ping_recv_iph;
                 struct icmphdr *ping_recv_icmph;
                 ping_recv_iph = (struct iphdr *)recv_buf;
                 ping_recv_icmph = (struct icmphdr *)(recv_buf + sizeof(struct iphdr));
+                int print_iphdr = 0;
+
+                printf("\n...................................ICMP HEADER..................................\n");
+                printf("Sender: %s \t Dest: %s\n", inet_ntoa(from_addr_ping.sin_addr), inet_ntoa(source_addr.sin_addr));
+
                 if (ping_recv_iph->protocol == IPPROTO_ICMP)
                 {
+                    printf("Protocol: ICMP\n");
                     if (ping_recv_icmph->type == ICMP_ECHOREPLY && ping_recv_iph->saddr == from_addr.sin_addr.s_addr)
                     {
+                        printf("Type: Echo Reply");
                         gettimeofday(&recv_time, NULL);
-                        printf("Echo reply received on IP: %s\n", inet_ntoa(from_addr.sin_addr));
+                        struct timeval diff_time;
+                        if(sz == 0){
+                            timersub(&recv_time,&curr_time,&diff_time);
+                            latency += diff_time.tv_sec*1000000 + diff_time.tv_usec;
+                        }
+                        // printf("Echo reply received on IP: %s\n", inet_ntoa(from_addr.sin_addr));
                     }
+                    else if(ping_recv_icmph->type == ICMP_ECHO) printf("Type: Echo Request     ");
+                    else if(ping_recv_icmph->type == ICMP_EXC_TTL) printf("Type: Time Limit Exceeded     ");
+                    else{
+                        print_iphdr = 1;
+                    }
+                    printf("Code: %d     Checksum: %hu\n", ping_recv_icmph->code, ping_recv_icmph->checksum);
                 }
+                if(print_iphdr){
+                    printf("\n....................................IP HEADER...................................\n");
+
+                }
+                printf("\n................................................................................\n");
             }
         }
-
+        
+        double latency_tm = (latency*1.000)/n;
+        latency_tm /= 1000000;
+        printf("-------------Latency till %dth hop is %lf---------------\n",ttl,latency_tm);
         ttl++;
+
+        if(dest_reached) break;
     }
     return 0;
 }
